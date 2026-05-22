@@ -162,7 +162,7 @@ The elevator travels upward then stops mid-floor. This is consistent with the re
 
 ### 3.5 Phase 2 — Doors Open During Movement
 
-The elevator descends and the doors begin opening while still moving. This is consistent with the deleted rung from the "Elevator Door" subtask. The diff confirmed one `RungMetadata` block was removed, meaning one rung of door-control logic was eliminated. The CCTV behavior is consistent with a movement interlock being removed, but the exact logic of the deleted rung cannot be proven from the `RungMetadata` diff alone — that element stores metadata, not contacts or coils.
+The elevator descends and the doors begin opening while still moving. This is consistent with the deleted rung from the "Elevator Door" subtask. The diff confirmed one `RungMetadata` block was removed, meaning one rung of door-control logic was eliminated. The CCTV behavior is consistent with a door-control interlock being affected, but the exact logic of the deleted rung cannot be proven from the `RungMetadata` diff alone — that element stores metadata, not contacts or coils.
 
 ### 3.6 Phase 3 — Abnormal Door Cycling
 
@@ -183,7 +183,7 @@ Emergency responders extract Ms. Wayne. The attacker disconnected at 15:47:05.
 | Pre-incident | Normal operation | None | High |
 | Entry | Kristi enters, presses floor button | Upload #3 triggered | High (PCAP corroborated) |
 | Phase 1 | Stuck between floors 2–3 | SAME_CALL removed | Medium (causality inferred) |
-| Phase 2 | Doors open during movement | Safety rung deleted | Medium (rung content not recovered) |
+| Phase 2 | Doors open during movement | RungMetadata removed from door-control logic | Medium (contact/coil content not recovered) |
 | Phase 3 | Abnormal door cycling | Timer: 10s → 5s | High (timer math confirmed) |
 | Phase 4 | Doors sealed at floor 1 | Upload #4 + lock flag | High (I/O state corroborated) |
 | Rescue | Emergency services | N/A | High |
@@ -229,7 +229,31 @@ Three devices talked to the PLC. Two match the network diagram. One does not.
 
 The Engineering WS sends exactly 2,782 packets/minute (46.4 reads/second) — a constant machine-generated rhythm. Its startup at 14:34:59 performs a sequential memory scan stepping 0xEC bytes at a time, reading 0x07EC bytes per request — consistent with a SCADA historian polling all PLC state at 46 Hz. No upload commands (0x41/0x42) were ever observed from this host. It is a monitoring system, not an attacker.
 
-At 14:35 its responses from the PLC are all-zero (post-upload PLC restart). By 14:50 it receives rich active data. This independently corroborates the attack timeline.
+```bash
+# Engineering WS per-minute packet count
+tshark -r 142728_162728.pcapng \
+  -Y "ip.src == 192.168.10.130 and mbtcp" \
+  -T fields -e frame.time \
+  | awk '{print substr($1,1,16)}' \
+  | sort | uniq -c
+```
+
+The per-minute breakdown reveals distinct operational phases:
+
+| Time window | Packets/min | Assessment |
+|---|---|---|
+| 14:27 | 5 | Brief startup — logger initializing |
+| 14:34 | 342 | Ramp-up — sequential memory scan begins |
+| 14:35 | 2,440 | Full operation — spike as logger catches up |
+| 14:50–15:50 | 2,782 | Steady state — exactly 46.4 reads/second |
+| 15:55 | 157 | Brief pause |
+| 15:56–16:04 | ~413 | Reduced polling resumes |
+| 16:05 | 3,195 | Bulk export spike — 15-minute cycle |
+| 16:20 | 3,195 | Second bulk export spike (confirms interval) |
+
+The 16:05 and 16:20 spikes are exactly 15 minutes apart — matching the PLC memory snapshot interval. These correlate with the snapshot acquisition process interacting with the logger.
+
+**PLC response states from the logger:** At 14:35, every logger response from the PLC contains all-zero bytes — `00feec00 0000000000...` (254 bytes of zeros). This is consistent with the PLC restarting after the first malicious upload. By 14:50, the PLC returns rich active data including timer values, coil states, and counter values, confirming the malicious program is fully executing. The logger therefore captured the entire attack from first upload through rescue, providing an independent record of PLC state at 46 reads/second throughout.
 
 ### 4.4 Attack Timeline — Per-Minute Analysis
 
@@ -269,6 +293,26 @@ tshark -r 142728_162728.pcapng \
 15:25:06.514  00420000   Upload #3 confirmed — 1.251 seconds total transfer
 15:46:50.110  00420000   Upload #4 confirmed
 ```
+
+**Upload #3 — millisecond-precise reconstruction:**
+
+```bash
+# Isolate the full upload #3 sequence
+tshark -r 142728_162728.pcapng \
+  -Y "ip.src == 192.168.10.164 and mbtcp" \
+  -T fields -e frame.time -e modbus.data \
+  | grep "T15:25:0[3-6]" | grep -E "f441|f480|f481|4200"
+```
+
+```
+15:25:03.763  f441ff00       StartDownload — PLC told to expect new program
+15:25:04.851  f480           BeginFileTransfer — transfer channel opened
+15:25:05.263  f429...        ZIP data begins (first write block)
+15:25:05.445  f481 00000000  Compressed malicious program payload
+15:25:06.514  00420000       EndDownload — program committed to PLC
+```
+
+Total transfer time: **1.251 seconds** (15:25:05.263 → 15:25:06.514). The ZIP payload in the data blocks contains the malicious `entry` XML with `attaxk` comment and the SAME_CALL removal — the exact changes confirmed by the ExtRAM program extraction.
 
 ### 4.6 The UMAS Upload Protocol — Decoded
 
@@ -324,15 +368,119 @@ tshark -r 142728_162728.pcapng \
 - Zero connections outside the 192.168.10.x subnet
 - Non-PLC traffic is limited to standard Windows broadcasts (NBNS, LLMNR, SSDP) and EcoStruxure device discovery (UDP port 27127)
 
-**The EcoStruxure discovery finding:** At 14:27:36 — 9 seconds before the first PLC connection — Employee-01 broadcast a 37-byte UDP packet to port 27127. Multiple devices responded including the PLC. This matches the EcoStruxure "Discover Devices" function — a human-initiated UI action. It is self-initiated behavior, not a response to any external command.
+**The EcoStruxure discovery finding:** At 14:27:36 — 9 seconds before the first PLC connection — Employee-01 broadcast a 37-byte UDP packet to port 27127. Multiple devices responded including the PLC at 192.168.10.45. The discovery payload (`baf35b2f7e03757d6f0f29533327c637726d...`) is Schneider's proprietary discovery protocol — a fixed 18-byte header followed by a device-specific encoded payload. The PLC, gateway (192.168.10.1), VM_PLC (192.168.10.153), and two unknown workstations (192.168.10.110, 192.168.10.104) all responded. This is self-initiated behavior matching the EcoStruxure "Discover Devices" UI action.
 
-**Session initialization pattern:** Employee-01 issued 20 QueryGetComInfo (0x7201) commands in 4 clusters of 4–6, one per upload. Each cluster follows: single connection → triple rapid-retry burst → stable session. This matches EcoStruxure's documented retry behavior when an M221 responds slowly.
+**The 20 QueryGetComInfo sessions — four clusters:**
 
-> **Assessment:** The PCAP contains no evidence of remote control of Employee-01 during the capture window. The traffic pattern — self-initiated discovery, human-paced monitoring, uploads timed to physical events, consistent EcoStruxure session behavior — is more consistent with local interactive use than with externally controlled malware. However, without host memory or disk evidence from Employee-01 (no image was provided), remote compromise cannot be completely ruled out. The strongest defensible conclusion is **machine-level attribution to DESKTOP-RSRBUGJ / 192.168.10.164**, with local interactive use as the best-supported hypothesis.
+```bash
+tshark -r 142728_162728.pcapng \
+  -Y "ip.src == 192.168.10.164 and mbtcp" \
+  -T fields -e frame.time -e modbus.data \
+  | grep "00720100"
+```
+
+Employee-01 issued 20 QueryGetComInfo (0x7201) commands in 4 tight clusters — one per upload:
+
+| Cluster | Timestamps | Pattern |
+|---|---|---|
+| 1 (Upload #1) | 14:27:45, 14:28:03 ×3, 14:28:26, 14:29:15 | Single → triple retry burst → stabilize |
+| 2 (Upload #2) | 15:00:17, 15:00:43 ×3, 15:00:48 | Single → triple retry burst → stabilize |
+| 3 (Upload #3) | 15:24:59, 15:25:16 ×3, 15:25:20 | Single → triple retry burst → stabilize |
+| 4 (Upload #4) | 15:46:41, 15:47:00 ×3, 15:47:03 | Single → triple retry burst → stabilize |
+
+Each cluster follows an identical pattern: a single connection attempt, then a triple rapid-retry burst at millisecond intervals (EcoStruxure's documented automatic retry when the M221 responds slowly), then a stable session. This is software-specific behavior that would only appear if a human was operating EcoStruxure Machine Expert and the software itself was managing the retry logic.
+
+**Complete UMAS command profile:**
+
+```bash
+tshark -r 142728_162728.pcapng \
+  -Y "ip.src == 192.168.10.164 and mbtcp" \
+  -T fields -e modbus.data \
+  | cut -c1-8 | sort | uniq -c | sort -rn
+```
+
+| Command | Code | Count | Purpose |
+|---|---|---|---|
+| Read variable block | 0x240a02 | 571 | Live monitoring — watching elevator I/O |
+| Keepalive ping | 0x0004 | 223 | Session heartbeat |
+| Read variable block (small) | 0x240702 | 187 | Smaller batch reads |
+| Read single variable | 0x240102 | 103 | Individual variable reads |
+| Session acknowledgement | 0x0002 | 36 | Protocol handshake |
+| QueryGetComInfo | 0x720100 | 20 | Session initialization — 4 clusters |
+| EndDownload | 0x420000 | 4 | Confirmed 4 program uploads |
+| StartDownload | 0x41ff00 | 1 | Upload initiation |
+
+The 861 read requests (571+187+103) against 4 EndDownloads illustrates the ratio of surveillance to action — the attacker spent the vast majority of the session watching the elevator state and waiting.
+
+> **Assessment:** The PCAP contains no evidence of remote control of Employee-01 during the capture window. The traffic pattern — self-initiated discovery, consistent EcoStruxure session retry behavior, human-paced monitoring at 2 reads/second, uploads timed to physical events — is more consistent with local interactive use than with externally controlled malware. However, without host memory or disk evidence from Employee-01 (no image was provided), remote compromise cannot be completely ruled out. The strongest defensible conclusion is machine-level attribution to DESKTOP-RSRBUGJ / 192.168.10.164, with local interactive use as the best-supported hypothesis.
 
 ### 4.9 Attacker Surveillance — Watching for Kristi
 
 Between uploads, Employee-01 polled specific variable indices at 2 reads/second. The UMAS read commands targeted floor call flags (F1CALL, F2CALL, F3CALL) and door sensor states — the values needed to determine when Kristi entered. Upload #3 began within approximately 5 seconds of the floor call flags becoming active, consistent with a human operator watching a live variable display and triggering the upload manually.
+
+### 4.10 PLC Physical State Reconstructed from Network Data
+
+The Engineering WS logger responses allow the PLC's physical output state to be reconstructed directly from network traffic, without relying on the memory snapshots. By comparing PLC responses to the logger at 14:50 (first malicious program active) versus 15:35 (Kristi trapped, fourth upload approaching), specific byte-level changes are visible:
+
+```bash
+# Extract PLC responses to the logger at two key windows
+tshark -r 142728_162728.pcapng \
+  -Y "ip.src == 192.168.10.45 and ip.dst == 192.168.10.130 and mbtcp" \
+  -T fields -e frame.time -e modbus.data \
+  | grep "T14:50:01\|T15:35:05" | head -6
+```
+
+Comparing the first rich-data response packet at 14:50 against the equivalent packet at 15:35:
+
+| Offset | 14:50 value | 15:35 value | Interpretation |
+|---|---|---|---|
+| 0x0014 | 0x10 | 0x50 | PLC mode register — operating state changed |
+| 0x0097 | 0x00 | 0x01 | Floor call flag SET — Kristi pressed a floor button |
+| 0x009F | 0x00 | 0x01 | Second floor call flag SET |
+| 0x00BC–0xC0 | 181/206/179 | 177/198/175 | Execution time counters — program cycle times |
+| 0x009E (pkt2) | 0x761c (7,196) | 0xC308 (49,928) | PLC scan cycle counter — +42,732 cycles in 45 min |
+
+The flags at offsets 0x0097 and 0x009F transitioning from 0x00 to 0x01 provide network-level evidence that a floor button was pressed during the attack window. This independently corroborates the CCTV observation of Kristi pressing the floor button — derived purely from the logger's routine polling responses, not from any dedicated forensic collection.
+
+### 4.11 Other Devices — Complete OT Network Picture
+
+PCAP analysis reveals 17 devices on the network versus the 7 in the network diagram. The additional devices do not show PLC attack behavior, but their identification is relevant to understanding the full network exposure:
+
+```bash
+# All source IPs observed
+tshark -r 142728_162728.pcapng \
+  -T fields -e ip.src | sort -u | grep "192.168.10"
+```
+
+| IP | Identification | Evidence |
+|---|---|---|
+| 192.168.10.1 | Schneider gateway/switch | Responds to port 27127 discovery with 194-byte Schneider payload |
+| 192.168.10.104 | Unknown workstation | SSDP M-SEARCH + UDP port 1743 (EcoStruxure communication port) |
+| 192.168.10.109 | Mobile device | Two mDNS sleep-proxy packets only — phone or tablet in power-save |
+| 192.168.10.110 | Unknown workstation | WS-Discovery XML on port 3702 + port 27127 EcoStruxure discovery |
+| 192.168.10.112 | Network printer | mDNS IPP/IPPS/SMB printer queries |
+| 192.168.10.119 | DHCP relay/server | Issues DHCP Offer and ACK responses |
+| 192.168.10.125 | Unknown workstation | SSDP + WPAD proxy search (looking for proxy autoconfiguration) |
+| 192.168.10.138 | Unknown workstation | DHCP Inform — recently joined the network |
+| 192.168.10.153 | VM_PLC (SAFE Lab test VM) | Announces itself as "VM_PLC" via BROWSER protocol; sends port 27127 discovery; has Adobe software (ARMMF.ADOBE.COM NBNS queries) |
+| 192.168.10.241 | DHCP server (Schneider switch) | Issues DHCP NAK responses; sends port 27126 Schneider management traffic |
+
+**DHCP NAK events:** The DHCP server (192.168.10.241) issued NAK responses to the Engineering WS (192.168.10.130) at 15:01:57 and to an unknown workstation (192.168.10.138) at 15:26:08 — immediately after uploads #2 and #3. This is consistent with the PLC restarting during program uploads causing connected devices to lose network synchronization and attempt DHCP lease renewal.
+
+**Employee-02 boot sequence:** At exactly 14:35:55 — 8 minutes after the first attack upload — Employee-02 (192.168.10.242) performed a full Windows network stack initialization sequence:
+
+```
+14:35:55  IGMPv3  Leave group 224.0.0.251 (mDNS)
+14:35:55  IGMPv3  Leave group 224.0.0.252 (LLMNR)
+14:35:55  IGMPv3  Join group 224.0.0.251
+14:35:55  IGMPv3  Join group 239.255.255.250 (SSDP)
+14:35:55  MDNS    Query: DESKTOP-RSRBUGJ.local  ← looking up attacker's hostname
+14:35:55  LLMNR   Query: DESKTOP-RSRBUGJ        ← second lookup of attacker
+14:35:55  NBNS    Registration: DESKTOP-RSRBUGJ
+14:35:57  DNS     Query: www.msftconnecttest.com ← Windows connectivity check (no DNS server on OT network)
+```
+
+This is the exact sequence of a Windows machine booting up. Employee-02 turned on their computer and Windows' automatic name resolution queried for DESKTOP-RSRBUGJ — the attacker's machine — almost immediately. The DNS queries for `www.msftconnecttest.com` and `dns.msftncsi.com` went unanswered (no DNS server on the OT network, generating ICMP port unreachable responses from Employee-03 at 192.168.10.101). Employee-02 is a witness, not a participant — they booted up during the attack but show no PLC communication of any kind.
 
 ---
 
@@ -486,7 +634,7 @@ The delay approximately halved. The base unit change from seconds to millisecond
 
 ---
 
-#### Change 3 — Rung Metadata Removed from Elevator Door Subtask
+#### Change 3 — RungMetadata Removed from Elevator Door Subtask
 
 ```diff
 < <RungMetadata>
@@ -497,13 +645,13 @@ The delay approximately halved. The base unit change from seconds to millisecond
 < </RungMetadata>
 ```
 
-One complete `RungMetadata` block was removed from the "Elevator Door" subtask. The recovered XML diff shows a structural change in the door-control rung list, but the visible `RungMetadata` element stores rung-level metadata — not the actual ladder contacts, coils, or variable names. Therefore, the exact logic and safety function of the removed rung cannot be proven from this diff alone.
+One complete `RungMetadata` block was removed from the "Elevator Door" subtask. `RungMetadata` elements store rung-level metadata — they do not contain the actual ladder contacts, coils, or variable names. Therefore, the visible XML diff confirms a rung-list structural change, but the specific logic of the deleted rung cannot be determined from this diff alone.
 
 | Evidence | What it supports |
 |---|---|
 | `RungMetadata` block removed | Confirms a structural change in the door-control rung list |
 | Missing contact/coil body in diff | Prevents proving the exact safety logic from this XML diff alone |
-| CCTV: doors open during movement | Consistent with a movement interlock being removed |
+| CCTV: doors open during movement | Consistent with a door-control interlock being affected, but not definitive proof of the deleted rung’s function |
 | To prove definitively | Recover deleted rung's contacts/coils — requires EcoStruxure import or engineering backup |
 
 ---
@@ -757,7 +905,7 @@ This was the most critical reference for network analysis. Without it, the PCAP 
 | Live monitoring of PLC I/O state between uploads | Collection — I/O image monitoring |
 | SAME_CALL variable removal | Modify Controller Tasking (T0821) |
 | Door timer alteration | Manipulation of Control (T0831) |
-| Elevator safety rung deletion | Impair Process Control / Manipulation of Control |
+| Elevator door-control rung-list change | Impair Process Control / Manipulation of Control |
 | Targeted CEO specifically via elevator | Impact — manipulation of physical environment |
 | Flat OT network, no segmentation | Architecture weakness enabling access (defender gap, not attacker TTP) |
 
@@ -894,7 +1042,7 @@ The investigator's role is not only to prove what happened — it is also to red
 |---|---|---|---|
 | 1 | SAME_CALL variable removed | Floor call state disrupted; elevator stuck | Medium (rung references not fully traced) |
 | 2 | Timer: 10s/OneSecond → 5000ms/OneMilliSeconds | Door timing altered; delay approximately halved | High (math confirmed; sub-second claim not supported alone) |
-| 3 | Rung metadata removed from Elevator Door subtask | Confirms a door-control rung-list structural change; unsafe door behavior is consistent with this change, but exact safety function is not proven from the visible XML diff alone | Medium (contact/coil content not recovered) |
+| 3 | `RungMetadata` block removed from Elevator Door subtask | Confirms a door-control rung-list structural change; CCTV behavior is consistent with an interlock impact, but exact function is not proven | Medium (contact/coil content not recovered) |
 | 4 | Project renamed 'SAFE Lab Mafia' + 'attaxk' comment | Deliberate attacker signature | High (directly observed in XML) |
 
 ### 12.3 Security Failures
@@ -908,7 +1056,7 @@ The investigator's role is not only to prove what happened — it is also to red
 ### 12.4 What Would Strengthen This Investigation
 
 - Memory dump or disk image of DESKTOP-RSRBUGJ — user session evidence, installed software, logon events, Prefetch, Amcache
-- Full rung logic (contacts/coils) for the deleted safety rung and all rungs referencing SAME_CALL
+- Full rung logic (contacts/coils) for the removed `RungMetadata`/door-control rung area and all rungs referencing SAME_CALL
 - CCTV timecode verified against a reference clock
 - M221 memory map confirming exact offset of output image table
 - Behavioral analysis of setup64.exe to determine what it does and whether it is connected to the elevator incident
