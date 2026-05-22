@@ -117,10 +117,10 @@ The network evidence confirms: F1CALL/F2CALL/F3CALL flags at memory offset 0x009
 The elevator travels upward then stops between floors 2 and 3. This is the direct effect of the **SAME_CALL variable being removed** from the ladder logic. SAME_CALL prevented the elevator from responding to duplicate floor calls — without it, the floor position logic broke and the elevator could not correctly determine when it had arrived at its destination.
 
 ### 2.4 Phase 2 — Doors Open Mid-Travel
-The elevator descends back toward floor 1 but the doors begin opening while the elevator is still in motion. This is the direct effect of the **safety rung deletion**. The deleted rung was a safety interlock that prevented the door-open motor (%Q0.0) from activating while the elevator was moving. With this rung gone, there was no software protection preventing the doors from opening at any time.
+The elevator descends back toward floor 1 and the doors begin opening while the elevator is still in motion. The modified project shows a **rung-level structural change in the door-control logic**. This change is consistent with the unsafe door behavior observed on CCTV, but the exact interlock function is not proven by the visible XML diff alone because the recovered diff exposes the removed `RungMetadata` block, not the full contact/coil body.
 
 ### 2.5 Phase 3 — Erratic Door Cycling
-The elevator makes erratic movements and the doors rapidly cycle open and closed. This is the direct effect of the **door timer modification**: the timer base was changed from `OneSecond` to `OneMilliSeconds`. While the preset value appeared similar (10 → 5000), operating at millisecond resolution caused the door timer to fire in sub-second intervals, producing the rapid cycling observed on CCTV.
+The elevator makes erratic movements and the doors cycle abnormally. The PLC project shows a **door timer modification**: the timer changed from `Preset=10`, `Base=OneSecond` to `Preset=5000`, `Base=OneMilliSeconds`. This changes the effective delay from approximately **10 seconds** to **5000 ms = 5 seconds**. This does not prove sub-second cycling by itself; any faster cycling claim would need separate support from CCTV frame timing, runtime timer values, or additional ladder-logic evidence.
 
 ### 2.6 Phase 4 — Doors Sealed
 The elevator arrives at floor 1 and the doors seal completely shut. Upload #4 at 15:46:48 delivered the final malicious program that explicitly cleared the DOOR_OPEN (%Q0.0) and DOOR_CLOSE (%Q0.1) output bits. This is confirmed by the 4-byte change in the last ExtRAM snapshot: offset 0x5D419 shows bits 0 and 1 clearing from 0x8B to 0x88.
@@ -135,8 +135,8 @@ Emergency responders arrive and extract Ms. Wayne. The attacker had already disc
 | Pre-incident | Normal operation to floor 3 and back | None | Before 14:27:51 |
 | Entry | Kristi enters, presses floor button | Upload #3 triggered | 15:25:05 |
 | Phase 1 | Stuck between floors 2–3 | SAME_CALL removed | 15:25:06 |
-| Phase 2 | Doors open during movement | Safety rung deleted | 15:25+ |
-| Phase 3 | Rapid door cycling | Timer changed to ms | 15:25+ |
+| Phase 2 | Doors open during movement | Door-control rung structure changed | 15:25+ |
+| Phase 3 | Abnormal door cycling | Timer changed from ~10s to ~5s | 15:25+ |
 | Phase 4 | Doors sealed at floor 1 | Upload #4 final program | 15:46:50 |
 | Rescue | Emergency services extract victim | N/A | ~16:00+ |
 
@@ -446,49 +446,61 @@ The timer behavior changed from a **10-second** delay to a **5-second** millisec
 
 This does **not** prove sub-second cycling by itself. The defensible finding is that the attacker changed the timer resolution and reduced the effective delay from about 10 seconds to about 5 seconds. Any claim of sub-second cycling must be supported separately by CCTV frame timing, runtime timer values, or additional ladder-logic interactions.
 
-#### Change 3 — Safety Rung Deleted from the Elevator Door Subtask
+#### Change 3 — Rung Metadata Removed from the Elevator Door Logic
 
-The XML diff shows that one complete rung was removed from the **Elevator Door** subtask. The earlier draft only showed the deleted `RungMetadata`, which proves that a rung boundary changed but does not show the actual safety logic. For a defensible forensic report, the deleted rung must be documented by extracting the full rung body from the baseline XML and showing that it no longer appears in the modified program.
+The full diff between the baseline PLC project (`prog1`) and the modified project (`prog5`) shows that one `RungMetadata` block was removed from the `<Rungs>` section:
 
-Use this evidence workflow to capture the actual deleted rung content:
-
-```bash
-# 1) Extract the complete Elevator Door subtask from baseline and modified XML.
-python3 << 'EOF'
-from pathlib import Path
-import re
-
-baseline = Path('/tmp/prog1/entry').read_text(errors='replace')
-modified = Path('/tmp/prog5/entry').read_text(errors='replace')
-
-# Adjust the boundary regex if the XML uses a different tag name around subtasks/rungs.
-def extract_elevator_door(xml):
-    m = re.search(r'(<[^>]*Name[^>]*>Elevator Door</[^>]*>.*?)(?=<[^>]*Name[^>]*>|\Z)', xml, re.S)
-    return m.group(1) if m else xml
-
-Path('/tmp/baseline_elevator_door.xml').write_text(extract_elevator_door(baseline))
-Path('/tmp/modified_elevator_door.xml').write_text(extract_elevator_door(modified))
-print('Wrote /tmp/baseline_elevator_door.xml and /tmp/modified_elevator_door.xml')
-EOF
-
-# 2) Diff the extracted door-control logic and keep the full deleted rung body.
-diff -u /tmp/baseline_elevator_door.xml /tmp/modified_elevator_door.xml   > /tmp/elevator_door_deleted_rung.diff
-
-# 3) Review the deleted contacts/coils, not only RungMetadata.
-less /tmp/elevator_door_deleted_rung.diff
+```diff
+-        <RungMetadata>
+-          <MainComment />
+-          <Comments />
+-          <Name />
+-          <IsLadderSelected>false</IsLadderSelected>
+-        </RungMetadata>
 ```
 
-Add the deleted rung evidence in this format after reviewing the diff:
+This confirms that the structure of the ladder-logic rung list changed between the clean baseline and the modified program. However, the extracted XML diff does **not** expose the deleted rung’s full contact/coil body, so the exact safety interlock logic cannot be proven from this diff alone.
 
-| Deleted rung evidence | What to record |
+The safest forensic conclusion is that the modified PLC project removed a rung-related metadata block from the door-control rung list. This change is consistent with the unsafe elevator door behavior observed on CCTV, but the exact safety function of the removed rung should only be stated if the full ladder logic body is recovered or confirmed from another representation of the project.
+
+To reproduce this finding:
+
+```bash
+diff -u /tmp/prog1/entry /tmp/prog5/entry > /tmp/prog1_vs_prog5_full.diff
+
+grep '^-' /tmp/prog1_vs_prog5_full.diff | head -200
+
+grep -nEi "Rung|DOOR_OPEN|DOOR_CLOSE|LDR_OPEN|LDR_CLOSE|Q0\.0|Q0\.1|Elevator Door|OPEN|CLOSE|Timer|Preset|Base|SAME_CALL" \
+  /tmp/prog1_vs_prog5_full.diff
+```
+
+Observed deleted lines:
+
+```diff
+-  <MB>
+-    <Index>60</Index>
+-    <Symbol>SAME_CALL</Symbol>
+-    <Comment>SameFloorCall</Comment>
+-  </MB>
+-    <Preset>10</Preset>
+-    <Base>OneSecond</Base>
+-        <RungMetadata>
+-          <MainComment />
+-          <Comments />
+-          <Name />
+-          <IsLadderSelected>false</IsLadderSelected>
+-        </RungMetadata>
+-      <Name>New Project</Name>
+```
+
+Evidence limitation:
+
+| Evidence | What it supports |
 |---|---|
-| Subtask | `Elevator Door` |
-| Deleted contacts | Paste the actual contact names/addresses from the baseline rung |
-| Deleted coil/output | Paste the actual coil/output affected by the rung |
-| Safety meaning | Explain the rung based on its contacts/coils |
-| Evidence limitation | If only metadata is available, state that the report proves a rung was deleted but does not independently prove the rung's safety function |
-
-With the current evidence shown in this write-up, the safest wording is: **a rung was deleted from the Elevator Door subtask, and this deletion is consistent with the observed unsafe door behavior. The exact interlock function should be proven by including the full deleted rung body from the baseline XML.**
+| `RungMetadata` block removed | Confirms a rung-list structural change in the PLC project |
+| Missing contact/coil body in visible diff | Prevents proving the exact safety interlock logic from this XML diff alone |
+| CCTV door behavior | Corroborates that the modified logic produced unsafe physical behavior |
+| Required next proof | Recover or export a richer ladder representation showing the removed contacts/coils |
 
 #### Change 4 — Attacker Signature (Line 1384)
 ```diff
@@ -903,5 +915,5 @@ The investigator's role is not only to prove what happened. The investigator als
 |---|---|---|
 | 1 | SAME_CALL variable removed | Floor position tracking broken, elevator stuck |
 | 2 | Timer: 10s/OneSecond → 5000/OneMilliSeconds | Delay changed from ~10 seconds to ~5 seconds; sub-second cycling is not proven by this change alone |
-| 3 | Rung deleted from Elevator Door subtask | Consistent with unsafe door behavior; exact safety function must be proven by including the full deleted rung body |
+| 3 | Rung metadata removed from the Elevator Door logic | Confirms a ladder-rung structure change; exact safety function is not proven by the visible XML diff alone |
 | 4 | Project renamed 'SAFE Lab Mafia' + 'attaxk' comment | Attacker signature |
