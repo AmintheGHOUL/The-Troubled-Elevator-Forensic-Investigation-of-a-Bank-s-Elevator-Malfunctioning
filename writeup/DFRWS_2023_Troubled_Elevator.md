@@ -7,7 +7,11 @@
 **Tools:** Wireshark/tshark, Volatility 3, binwalk, 7-Zip, Python 3, cmp/xxd/strings
 
 ---
+## Solution Mind Map
 
+![DFRWS 2023 Troubled Elevator Solution Mind Map](visuals/troubled_elevator_solution_mindmap_improved.svg)
+
+---
 ## Table of Contents
 
 1. [Understanding the Network and Elevator Manual](#1-understanding-the-network-and-elevator-manual)
