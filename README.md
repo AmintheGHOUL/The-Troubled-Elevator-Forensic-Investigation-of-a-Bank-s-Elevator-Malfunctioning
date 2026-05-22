@@ -30,9 +30,9 @@
 
 ### 1.1 Reading the Network Diagram
 
-Before touching any artifact, reading the provided \`Network Diagrams.pdf\` is essential. It defines the OT network topology and tells us which devices are expected to communicate with the PLC.
+Before touching any artifact, reading the provided `Network Diagrams.pdf` is essential. It defines the OT network topology and tells us which devices are expected to communicate with the PLC.
 
-The network diagram reveals a **flat Layer-2 architecture** — every device on the same \`192.168.10.x\` subnet with no VLAN segmentation and no firewall between employee workstations and the PLC. This is the root cause of the attack: in a properly segmented Purdue Model network, employee workstations would never have layer-3 visibility to PLC devices.
+The network diagram reveals a **flat Layer-2 architecture** — every device on the same `192.168.10.x` subnet with no VLAN segmentation and no firewall between employee workstations and the PLC. This is the root cause of the attack: in a properly segmented Purdue Model network, employee workstations would never have layer-3 visibility to PLC devices.
 
 **Devices listed in the diagram:**
 
@@ -52,7 +52,7 @@ The diagram immediately raises a question: what happens when a regular workstati
 
 ### 1.2 Reading the Elevator Manual
 
-The \`Elevator Manual.pdf\` describes the Schneider Electric Modicon M221 PLC controlling the elevator. Key information to extract before analysis:
+The `Elevator Manual.pdf` describes the Schneider Electric Modicon M221 PLC controlling the elevator. Key information to extract before analysis:
 
 **Physical I/O mapping** — knowing what each input/output bit does is essential for interpreting code changes:
 
@@ -98,7 +98,7 @@ The fact that 6 machines had EcoStruxure but only 1 attacked the PLC is strong e
 
 ## 2. CCTV Footage Analysis
 
-The CCTV footage (\`Crop_fit.mp4\`) provides physical corroboration of all digital evidence and helps establish the human element of the attack. Watch the footage in phases:
+The CCTV footage (`Crop_fit.mp4`) provides physical corroboration of all digital evidence and helps establish the human element of the attack. Watch the footage in phases:
 
 ### 2.1 Pre-Incident Phase
 An employee is seen using the elevator normally — travelling to floor 3 (the Business Center) and returning to floor 1 without any issues. This confirms:
@@ -120,7 +120,7 @@ The elevator travels upward then stops between floors 2 and 3. This is the direc
 The elevator descends back toward floor 1 but the doors begin opening while the elevator is still in motion. This is the direct effect of the **safety rung deletion**. The deleted rung was a safety interlock that prevented the door-open motor (%Q0.0) from activating while the elevator was moving. With this rung gone, there was no software protection preventing the doors from opening at any time.
 
 ### 2.5 Phase 3 — Erratic Door Cycling
-The elevator makes erratic movements and the doors rapidly cycle open and closed. This is the direct effect of the **door timer modification**: the timer base was changed from \`OneSecond\` to \`OneMilliSeconds\`. While the preset value appeared similar (10 → 5000), operating at millisecond resolution caused the door timer to fire in sub-second intervals, producing the rapid cycling observed on CCTV.
+The elevator makes erratic movements and the doors rapidly cycle open and closed. This is the direct effect of the **door timer modification**: the timer base was changed from `OneSecond` to `OneMilliSeconds`. While the preset value appeared similar (10 → 5000), operating at millisecond resolution caused the door timer to fire in sub-second intervals, producing the rapid cycling observed on CCTV.
 
 ### 2.6 Phase 4 — Doors Sealed
 The elevator arrives at floor 1 and the doors seal completely shut. Upload #4 at 15:46:48 delivered the final malicious program that explicitly cleared the DOOR_OPEN (%Q0.0) and DOOR_CLOSE (%Q0.1) output bits. This is confirmed by the 4-byte change in the last ExtRAM snapshot: offset 0x5D419 shows bits 0 and 1 clearing from 0x8B to 0x88.
@@ -148,7 +148,7 @@ Emergency responders arrive and extract Ms. Wayne. The attacker had already disc
 
 Start by understanding the traffic landscape:
 
-\`\`\`bash
+```bash
 # Total packet count and protocol breakdown
 tshark -r 142728_162728.pcapng -q -z io,phs
 
@@ -156,25 +156,25 @@ tshark -r 142728_162728.pcapng -q -z io,phs
 tshark -r 142728_162728.pcapng \\
   -Y "mbtcp" \\
   -T fields -e ip.src | wc -l
-\`\`\`
+```
 
 The capture contains 208,335 total packets. 123,479 (59%) are Modbus TCP. All PLC-bound Modbus traffic uses **Function Code 90 (0x5A)** — this is the UMAS identifier. Normal Modbus function codes are 1–127; FC90 is Schneider proprietary. Any device sending FC90 has EcoStruxure installed.
 
 ### 3.2 Who Talked to the PLC?
 
-\`\`\`bash
+```bash
 tshark -r 142728_162728.pcapng \\
   -Y "ip.dst == 192.168.10.45" \\
   -T fields -e ip.src \\
   | sort | uniq -c | sort -rn
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 67681  192.168.10.121   ← HMI (expected)
 40058  192.168.10.130   ← Engineering WS (expected)
  1755  192.168.10.164   ← Employee-01 (UNAUTHORIZED)
-\`\`\`
+```
 
 Three devices talked to the PLC. Two are expected. One is not.
 
@@ -188,13 +188,13 @@ Its traffic also confirms the attack timeline: at 14:35 it receives all-zero res
 
 Analyze Employee-01's traffic per minute to find upload bursts:
 
-\`\`\`bash
+```bash
 tshark -r 142728_162728.pcapng \\
   -Y "ip.src == 192.168.10.164 and mbtcp" \\
   -T fields -e frame.time \\
   | awk '{print substr($1,1,16)}' \\
   | sort | uniq -c
-\`\`\`
+```
 
 The per-minute analysis reveals four distinct bursts:
 
@@ -211,20 +211,20 @@ Between bursts: steady 4–8 packets/min = EcoStruxure live variable monitoring 
 
 Every successful program upload ends with the UMAS EndDownload command (0x42 0x00):
 
-\`\`\`bash
+```bash
 tshark -r 142728_162728.pcapng \\
   -Y "ip.src == 192.168.10.164 and mbtcp" \\
   -T fields -e frame.time -e modbus.data \\
   | grep "00420000"
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 14:27:53.867  00420000   ← Upload #1 confirmed
 15:00:25.629  00420000   ← Upload #2 confirmed
 15:25:06.514  00420000   ← Upload #3 confirmed
 15:46:50.110  00420000   ← Upload #4 confirmed
-\`\`\`
+```
 
 Four EndDownload commands, four confirmed uploads. Upload #3 took exactly 1.251 seconds (15:25:05.263 → 15:25:06.514).
 
@@ -232,18 +232,18 @@ Four EndDownload commands, four confirmed uploads. Upload #3 took exactly 1.251 
 
 The complete UMAS program upload sequence uses four commands:
 
-\`\`\`
+```
 1. f441ff00  ← StartDownload (0x41) — tell PLC to expect new program
 2. f480      ← BeginFileTransfer (0x80) — open transfer channel
 3. f4xxxx    ← FileTransfer blocks — send compressed ZIP data
 4. 00420000  ← EndDownload (0x42) — commit program to PLC
-\`\`\`
+```
 
 This matches the UMAS protocol documentation from the Kaspersky ICS-CERT research paper (see Section 6).
 
 ### 3.7 Attacker Machine Identification
 
-\`\`\`bash
+```bash
 # Hostname from NetBIOS broadcasts
 tshark -r 142728_162728.pcapng \\
   -Y "ip.src == 192.168.10.164 and nbns" \\
@@ -258,20 +258,20 @@ tshark -r 142728_162728.pcapng \\
 tshark -r 142728_162728.pcapng \\
   -Y "ip.src == 192.168.10.164 and llmnr" \\
   -T fields -e dns.qry.name | head -5
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 Hostname:    DESKTOP-RSRBUGJ
 MAC:         00:0c:29:5a:da:a3
 OUI:         VMware (00:0c:29) — virtual machine
-\`\`\`
+```
 
 ### 3.8 Was Employee-01 Hacked?
 
 This is a critical question. A compromised machine would show incoming control commands before each upload. Check:
 
-\`\`\`bash
+```bash
 # Any traffic TO Employee-01 (other than from PLC)?
 tshark -r 142728_162728.pcapng \\
   -Y "ip.dst == 192.168.10.164" \\
@@ -283,7 +283,7 @@ tshark -r 142728_162728.pcapng \\
   -Y "ip.src == 192.168.10.164 or ip.dst == 192.168.10.164" \\
   -T fields -e ip.src -e ip.dst \\
   | grep -v "192.168.10" | sort -u
-\`\`\`
+```
 
 **Result:** Zero incoming control commands. Zero external connections. The only non-PLC traffic from Employee-01 is standard Windows broadcasts (NBNS, LLMNR, SSDP) and Schneider EcoStruxure device discovery broadcasts.
 
@@ -307,13 +307,13 @@ Upload #3 was triggered within seconds of her pressing the floor button — conf
 
 A common mistake is attempting to use Volatility on PLC memory dumps. Volatility is built around OS memory structures — page tables, process lists, kernel objects. A PLC like the M221 runs bare-metal firmware with no OS, no virtual memory, and no process list. Volatility has nothing to hook into.
 
-PLC memory forensics requires different tools: \`cmp\`, \`xxd\`, \`strings\`, \`binwalk\`, and Python.
+PLC memory forensics requires different tools: `cmp`, `xxd`, `strings`, `binwalk`, and Python.
 
 ### 4.2 ExtRAM Differential Analysis
 
 The most powerful technique is comparing consecutive 15-minute snapshots to identify when changes occurred:
 
-\`\`\`bash
+```bash
 cd 'PLC Memory Dumps'
 
 for pair in '143509 145014' '145014 150519' '150519 152024' \\
@@ -323,36 +323,36 @@ for pair in '143509 145014' '145014 150519' '150519 152024' \\
   count=$(cmp -l ExtRAM_20230629${a}.bin ExtRAM_20230629${b}.bin | wc -l)
   echo "$a -> $b: $count bytes changed"
 done
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 143509 → 145014:     15 bytes  (minimal — first upload effect)
 145014 → 150519:  7,317 bytes  ← MASSIVE — malicious program active
 150519 → 152024:     18 bytes  (near-static — elevator idle)
 152024 → 153528:  7,287 bytes  ← MASSIVE — attack active (Kristi enters)
 153528 → 155033:  6,324 bytes  ← LARGE — fourth upload, doors sealed
 155033 → 160538:      4 bytes  (near-static — post-incident)
-\`\`\`
+```
 
 The pattern is clear: large changes during attack windows, near-static during idle periods.
 
 ### 4.3 Finding the Program Archive — binwalk
 
-\`\`\`bash
+```bash
 for f in ExtRAM_*.bin; do
   echo "=== $f ==="
   binwalk $f | grep -iE "zip|end of zip"
 done
-\`\`\`
+```
 
 **Result:** All seven dumps contain a ZIP archive starting at offset **0xD00B** (53,259 decimal). End offsets vary per dump (0xE8B2, 0xE8C5, 0xE8A0, 0xE8B8) because the compressed program changes size.
 
 ### 4.4 Extracting the ZIP — Python Carving Required
 
-binwalk's built-in extraction fails because it requires the Java \`jar\` tool. Manual Python carving works reliably:
+binwalk's built-in extraction fails because it requires the Java `jar` tool. Manual Python carving works reliably:
 
-\`\`\`bash
+```bash
 python3 << 'EOF'
 import subprocess, os
 
@@ -379,10 +379,10 @@ for dump, start, end, name in dumps:
     size = os.path.getsize(f'/tmp/{name}/entry')
     print(f'{name}: {size} bytes extracted')
 EOF
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 prog1: 49,417 bytes
 prog2: 49,417 bytes   ← identical to prog1 (both legitimate)
 prog3: 49,888 bytes   ← LARGER — first malicious modification
@@ -390,16 +390,16 @@ prog4: 49,888 bytes   ← identical to prog3
 prog5: 49,144 bytes   ← SMALLER — safety rung deleted
 prog6: 49,420 bytes   ← final state
 prog7: 49,420 bytes   ← identical to prog6
-\`\`\`
+```
 
-The file \`entry\` is an **XML document** — EcoStruxure Machine Expert's \`MetaDataEntity\` project format.
+The file `entry` is an **XML document** — EcoStruxure Machine Expert's `MetaDataEntity` project format.
 
 ### 4.5 Analyzing the XML Content
 
-\`\`\`bash
+```bash
 # Look at the structure of the legitimate program
 strings /tmp/prog1/entry | head -60
-\`\`\`
+```
 
 The XML reveals the complete I/O mapping, variable definitions, and ladder logic task structure:
 - **What Floor** (3 rungs), **First Called** (4 rungs), **Second Called** (5 rungs)
@@ -408,51 +408,51 @@ The XML reveals the complete I/O mapping, variable definitions, and ladder logic
 
 ### 4.6 Diffing Programs — Finding the Malicious Changes
 
-\`\`\`bash
+```bash
 # Compare all programs against the legitimate baseline
 for p in prog2 prog3 prog4 prog5 prog6 prog7; do
   echo "=== prog1 vs $p ==="
   diff /tmp/prog1/entry /tmp/$p/entry | grep '^[<>]' | head -20
   echo ""
 done
-\`\`\`
+```
 
 **Programs 1 and 2 are identical** — the baseline is clean.
 
 **Programs 3–7 contain four specific changes:**
 
 #### Change 1 — SAME_CALL Variable Removed (Lines 169–173)
-\`\`\`diff
+```diff
 < <MB>
 <   <Index>60</Index>
 <   <Symbol>SAME_CALL</Symbol>
 <   <Comment>SameFloorCall</Comment>
 < </MB>
-\`\`\`
-The \`SAME_CALL\` memory bit prevented the elevator from responding to a call for the floor it was already on. Removing it broke floor position tracking — the elevator no longer knew when it had "arrived."
+```
+The `SAME_CALL` memory bit prevented the elevator from responding to a call for the floor it was already on. Removing it broke floor position tracking — the elevator no longer knew when it had "arrived."
 
 #### Change 2 — Door Timer Modified (Lines 176–177)
-\`\`\`diff
+```diff
 < <Preset>10</Preset>
 < <Base>OneSecond</Base>
 ---
 > <Preset>5000</Preset>
 > <Base>OneMilliSeconds</Base>
-\`\`\`
+```
 The timer behavior changed from a **10-second** delay to a **5-second** millisecond-based delay:
 
-- Baseline: \`Preset=10\`, \`Base=OneSecond\` → approximately **10 seconds**
-- Modified: \`Preset=5000\`, \`Base=OneMilliSeconds\` → approximately **5000 ms = 5 seconds**
+- Baseline: `Preset=10`, `Base=OneSecond` → approximately **10 seconds**
+- Modified: `Preset=5000`, `Base=OneMilliSeconds` → approximately **5000 ms = 5 seconds**
 
 This does **not** prove sub-second cycling by itself. The defensible finding is that the attacker changed the timer resolution and reduced the effective delay from about 10 seconds to about 5 seconds. Any claim of sub-second cycling must be supported separately by CCTV frame timing, runtime timer values, or additional ladder-logic interactions.
 
 #### Change 3 — Safety Rung Deleted from the Elevator Door Subtask
 
-The XML diff shows that one complete rung was removed from the **Elevator Door** subtask. The earlier draft only showed the deleted \`RungMetadata\`, which proves that a rung boundary changed but does not show the actual safety logic. For a defensible forensic report, the deleted rung must be documented by extracting the full rung body from the baseline XML and showing that it no longer appears in the modified program.
+The XML diff shows that one complete rung was removed from the **Elevator Door** subtask. The earlier draft only showed the deleted `RungMetadata`, which proves that a rung boundary changed but does not show the actual safety logic. For a defensible forensic report, the deleted rung must be documented by extracting the full rung body from the baseline XML and showing that it no longer appears in the modified program.
 
 Use this evidence workflow to capture the actual deleted rung content:
 
-\`\`\`bash
+```bash
 # 1) Extract the complete Elevator Door subtask from baseline and modified XML.
 python3 << 'EOF'
 from pathlib import Path
@@ -476,13 +476,13 @@ diff -u /tmp/baseline_elevator_door.xml /tmp/modified_elevator_door.xml   > /tmp
 
 # 3) Review the deleted contacts/coils, not only RungMetadata.
 less /tmp/elevator_door_deleted_rung.diff
-\`\`\`
+```
 
 Add the deleted rung evidence in this format after reviewing the diff:
 
 | Deleted rung evidence | What to record |
 |---|---|
-| Subtask | \`Elevator Door\` |
+| Subtask | `Elevator Door` |
 | Deleted contacts | Paste the actual contact names/addresses from the baseline rung |
 | Deleted coil/output | Paste the actual coil/output affected by the rung |
 | Safety meaning | Explain the rung based on its contacts/coils |
@@ -491,18 +491,18 @@ Add the deleted rung evidence in this format after reviewing the diff:
 With the current evidence shown in this write-up, the safest wording is: **a rung was deleted from the Elevator Door subtask, and this deletion is consistent with the observed unsafe door behavior. The exact interlock function should be proven by including the full deleted rung body from the baseline XML.**
 
 #### Change 4 — Attacker Signature (Line 1384)
-\`\`\`diff
+```diff
 < <Name>New Project</Name>
 ---
 > <Name>SAFE Lab Mafia</Name>
-\`\`\`
+```
 The attacker renamed the EcoStruxure project "SAFE Lab Mafia" — a deliberate reference to the VCU SAFE Lab challenge creators. The comment "attaxk" (misspelling of "attack") was also embedded in programs 3 and 4.
 
 ### 4.7 The Final 4-Byte Change — Doors Permanently Locked
 
 The last snapshot pair (15:50 → 16:05) showed only 4 changed bytes across the entire 512KB ExtRAM:
 
-\`\`\`bash
+```bash
 python3 << 'EOF'
 with open('ExtRAM_20230629155033.bin', 'rb') as f: d1 = f.read()
 with open('ExtRAM_20230629160538.bin', 'rb') as f: d2 = f.read()
@@ -511,26 +511,26 @@ diffs = [(i, d1[i], d2[i]) for i in range(len(d1)) if d1[i] != d2[i]]
 for offset, b1, b2 in diffs:
     print(f"0x{offset:04X}: 0x{b1:02X} -> 0x{b2:02X}")
 EOF
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 0x5D419: 0x8B -> 0x88  (binary: 10001011 -> 10001000 — bits 0,1 cleared)
 0x5D43F: 0x0D -> 0x0E  (DOOR_CNT counter: 13 -> 14)
 0x5D440: 0x00 -> 0x01  (door lock flag: OFF -> ON)
 0x5D442: 0x08 -> 0x0F  (timer final value)
-\`\`\`
+```
 
-The bit-level change at \`0x5D419\` is important, but the report should show the mapping chain instead of asserting it in one sentence. The defensible chain is:
+The bit-level change at `0x5D419` is important, but the report should show the mapping chain instead of asserting it in one sentence. The defensible chain is:
 
-1. The project XML maps the symbolic outputs to physical PLC outputs: \`DOOR_OPEN = %Q0.0\` and \`DOOR_CLOSE = %Q0.1\`.
-2. The final ExtRAM byte changed from \`0x8B\` to \`0x88\`.
-3. In binary, \`0x8B = 10001011\` and \`0x88 = 10001000\`, so bits 0 and 1 changed from \`1\` to \`0\`.
-4. If \`0x5D419\` is confirmed as the PLC output-image byte for \`%Q0.x\`, then bits 0 and 1 correspond to \`%Q0.0\` and \`%Q0.1\`, meaning both door motor outputs were de-energized in the final state.
+1. The project XML maps the symbolic outputs to physical PLC outputs: `DOOR_OPEN = %Q0.0` and `DOOR_CLOSE = %Q0.1`.
+2. The final ExtRAM byte changed from `0x8B` to `0x88`.
+3. In binary, `0x8B = 10001011` and `0x88 = 10001000`, so bits 0 and 1 changed from `1` to `0`.
+4. If `0x5D419` is confirmed as the PLC output-image byte for `%Q0.x`, then bits 0 and 1 correspond to `%Q0.0` and `%Q0.1`, meaning both door motor outputs were de-energized in the final state.
 
 Add this proof block to make the mapping reproducible:
 
-\`\`\`bash
+```bash
 # Show the XML mapping from symbolic names to physical outputs.
 grep -nE "DOOR_OPEN|DOOR_CLOSE|%Q0\.0|%Q0\.1" /tmp/prog1/entry /tmp/prog6/entry
 
@@ -546,13 +546,13 @@ for bit in range(8):
     if before != after:
         print(f'bit {bit}: {before} -> {after}')
 EOF
-\`\`\`
+```
 
-Revised conclusion: **the final snapshot shows bits 0 and 1 clearing in the suspected output-image byte, consistent with \`DOOR_OPEN (%Q0.0)\` and \`DOOR_CLOSE (%Q0.1)\` being de-energized. This supports a final non-opening/closed-door state. Avoid saying the doors were “actively held shut” unless the lock flag, mechanical behavior, or ladder logic proves active holding rather than de-energized outputs.**
+Revised conclusion: **the final snapshot shows bits 0 and 1 clearing in the suspected output-image byte, consistent with `DOOR_OPEN (%Q0.0)` and `DOOR_CLOSE (%Q0.1)` being de-energized. This supports a final non-opening/closed-door state. Avoid saying the doors were “actively held shut” unless the lock flag, mechanical behavior, or ladder logic proves active holding rather than de-energized outputs.**
 
 ### 4.8 OnChipRAM Correlation
 
-\`\`\`bash
+```bash
 files=(OnChipRAM_20230629143506.bin OnChipRAM_20230629145007.bin
        OnChipRAM_20230629150509.bin OnChipRAM_20230629152010.bin
        OnChipRAM_20230629153511.bin OnChipRAM_20230629155012.bin
@@ -562,24 +562,24 @@ for i in 0 1 2 3 4 5; do
   count=$(cmp -l \${files[$i]} \${files[$((i+1))]} | wc -l)
   echo "\${files[$i]:12:4} -> \${files[$((i+1))]:12:4}: $count bytes"
 done
-\`\`\`
+```
 
 **Result:**
-\`\`\`
+```
 14:35 → 14:50:  7,654 bytes   (malicious program starts executing)
 14:50 → 15:05:  8,149 bytes   (HIGHEST — most active attack phase)
 15:05 → 15:20:  6,647 bytes   (LOWEST — elevator idle)
 15:20 → 15:35:  8,034 bytes   (Kristi enters — attack active)
 15:35 → 15:50:  7,953 bytes   (doors sealed)
 15:50 → 16:05:  7,493 bytes   (post-incident)
-\`\`\`
+```
 
 Unlike ExtRAM (which only changes during uploads), OnChipRAM changes continuously because it stores the running execution state — timers, counters, I/O values, cycle counts. The peak at 14:50→15:05 confirms the malicious program was most actively executing during this window.
 
 Key strings in OnChipRAM confirm hardware identity:
-\`\`\`bash
+```bash
 strings OnChipRAM_20230629143506.bin | grep -iE "M221|firmware|1\\.6"
-\`\`\`
+```
 **Result:** Model: M221CE16R | Firmware: 1.6.0.1 | MAC: 08:0F:44:C3:ED:D
 
 ---
@@ -588,7 +588,7 @@ strings OnChipRAM_20230629143506.bin | grep -iE "M221|firmware|1\\.6"
 
 ### 5.1 System Identification
 
-\`\`\`bash
+```bash
 # Identify machine and user
 vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
   windows.envars --pid 3440 2>/dev/null | grep -iE "username|computername|ip"
@@ -596,7 +596,7 @@ vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
 # Active network connections
 vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
   windows.netscan 2>/dev/null | grep -v "0.0.0.0\\|::"
-\`\`\`
+```
 
 **Key findings:**
 - Machine: DESKTOP-JKS05LO
@@ -608,29 +608,30 @@ The machine is on a completely different subnet (192.168.133.x) from the OT netw
 
 ### 5.2 Process List — Clean
 
-\`\`\`bash
-vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
-  windows.cmdline 2>/dev/null | grep -v "system32\\|N/A"
-\`\`\`
+```bash
+vol -f "Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw" \
+  windows.cmdline 2>/dev/null \
+  | grep -v "system32\|N/A"
+```
 
 No EcoStruxure, no Schneider software, no ICS tools. Standard processes: msedge.exe, OneDrive.exe, Explorer.exe, DumpIt.exe (forensic acquisition tool).
 
 DumpIt was run twice: 14:26:13 (first dump) and 14:32:55 (second dump — the file we have). Both filenames found in the Downloads folder:
-- \`DESKTOP-JKS05LO-20230622-142613.raw\`
-- \`DESKTOP-JKS05LO-20230622-143255.raw\`
+- `DESKTOP-JKS05LO-20230622-142613.raw`
+- `DESKTOP-JKS05LO-20230622-143255.raw`
 
 ### 5.3 Malfind — No Code Injection
 
-\`\`\`bash
+```bash
 vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
   windows.malfind 2>/dev/null | head -40
-\`\`\`
+```
 
 **Result:** No output — no injected shellcode, no hollowed processes. The machine was not actively compromised at dump time.
 
 ### 5.4 Browser Activity — Researching ICS Security
 
-\`\`\`bash
+```bash
 python3 << 'EOF'
 import re
 with open('Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw', 'rb') as f:
@@ -653,7 +654,7 @@ for t in targets:
                 print(decoded)
         idx += 1
 EOF
-\`\`\`
+```
 
 **Confirmed browser activity on June 22 (one week before the attack):**
 - Searched Bing for "vcu safe lab"
@@ -666,7 +667,7 @@ Kristi was researching ICS security and Schneider Electric one week before the a
 
 ### 5.5 Suspicious USB Artifact — Relevance Unconfirmed
 
-\`\`\`bash
+```bash
 # Check AppCompatFlags for removable media execution
 vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
   windows.registry.printkey \\
@@ -677,21 +678,21 @@ vol -f 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
 # Search for the USB volume signature in raw memory
 strings 'Desktop Memory Dump/DESKTOP-JKS05LO-20230622-143255.raw' \\
   | grep -iE "SIGN.MEDIA|setup64|19F1470"
-\`\`\`
+```
 
-**Critical finding:** \`setup64.exe\` was executed from D:\\ removable media (volume signature SIGN.MEDIA=19F1470). The executable's internal path structure reveals:
+**Critical finding:** `setup64.exe` was executed from D:\\ removable media (volume signature SIGN.MEDIA=19F1470). The executable's internal path structure reveals:
 
-\`\`\`
+```
 D:\\setup\\drivers\\audio\\installs_the_realtek_ac_97_audio_driver\\wdm5630\\
   documents\\documents11\\secret\\basic\\updated\\dao chich\\final 007 spy\\
-\`\`\`
+```
 
 This is a spy/surveillance tool disguised as a Realtek AC97 audio driver installer:
 - **Outer disguise:** "Realtek AC97 audio driver" — a legitimate-sounding cover
-- **Internal path:** \`secret\\basic\\updated\\dao chich\\final 007 spy\` — the actual payload
+- **Internal path:** `secret\\basic\\updated\\dao chich\\final 007 spy` — the actual payload
 - **Author/alias:** "dao chich" — likely Vietnamese-language alias
-- **SHA256:** \`4E91DC44EC0888CF93C1100A0412525EB0A4ED69A023CB4401F7DE4B7F\` — unknown to VirusTotal
-- **Also found:** \`D:\\attacksfull\` directory reference — organized attack toolkit on the USB
+- **SHA256:** `4E91DC44EC0888CF93C1100A0412525EB0A4ED69A023CB4401F7DE4B7F` — unknown to VirusTotal
+- **Also found:** `D:\\attacksfull` directory reference — organized attack toolkit on the USB
 
 The execution date is unknown (not in current Amcache — ran in a prior session). Whether this spy tool is related to the elevator attack or a separate incident requires further investigation.
 
@@ -742,11 +743,11 @@ This is the official Schneider Electric programming manual for the M221 PLC. It 
 
 1. **Memory architecture:** The manual explains the distinction between ExtRAM (project storage) and OnChipRAM (execution memory). Without this, we would not have known why ExtRAM changes corresponded to uploads while OnChipRAM changed continuously.
 
-2. **Timer base units:** The manual documents the \`Base\` parameter for timer blocks (\`OneSecond\`, \`OneMilliSeconds\`, \`OneTenthSecond\`). This was critical for interpreting Change 2. The modified timer should be described precisely as \`5000 × OneMilliSeconds = 5000 ms = 5 seconds\`, not as sub-second behavior unless separate runtime or CCTV timing evidence proves faster cycling.
+2. **Timer base units:** The manual documents the `Base` parameter for timer blocks (`OneSecond`, `OneMilliSeconds`, `OneTenthSecond`). This was critical for interpreting Change 2. The modified timer should be described precisely as `5000 × OneMilliSeconds = 5000 ms = 5 seconds`, not as sub-second behavior unless separate runtime or CCTV timing evidence proves faster cycling.
 
-3. **I/O addressing (%I, %Q, %M):** The manual defines the addressing scheme used throughout the XML program file. Without knowing that \`%Q0.0\` = DOOR_OPEN output and \`%Q0.1\` = DOOR_CLOSE output, the 4-byte change in the final ExtRAM snapshot (bits 0 and 1 clearing at offset 0x5D419) would have been meaningless. With the manual, we could immediately identify this as both door motors being deactivated.
+3. **I/O addressing (%I, %Q, %M):** The manual defines the addressing scheme used throughout the XML program file. Without knowing that `%Q0.0` = DOOR_OPEN output and `%Q0.1` = DOOR_CLOSE output, the 4-byte change in the final ExtRAM snapshot (bits 0 and 1 clearing at offset 0x5D419) would have been meaningless. With the manual, we could immediately identify this as both door motors being deactivated.
 
-4. **Task structure:** The manual explains EcoStruxure's task organization (periodic tasks, event tasks, subtasks). This helped us interpret the XML structure in the extracted \`entry\` file — specifically understanding that "Elevator Door" is a subtask with 11 rungs, and that deleting one rung removes a complete logical condition from the door control sequence.
+4. **Task structure:** The manual explains EcoStruxure's task organization (periodic tasks, event tasks, subtasks). This helped us interpret the XML structure in the extracted `entry` file — specifically understanding that "Elevator Door" is a subtask with 11 rungs, and that deleting one rung removes a complete logical condition from the door control sequence.
 
 5. **System variables (%SW, %S, %MW):** The manual documents system word addresses for firmware version, boot version, and Ethernet error codes. This let us decode the OnChipRAM strings to confirm the PLC model (M221CE16R), firmware version (1.6.0.1), and MAC address.
 
